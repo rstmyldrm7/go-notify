@@ -1,0 +1,8 @@
+# One-command setup: docker-compose up
+# Services to be added step by step:
+#   - postgres    (state store)
+#   - kafka       (KRaft single node)
+#   - api         (REST API, build/api.Dockerfile)
+#   - worker      (queue consumer, build/worker.Dockerfile)
+#   - scheduler   (scheduled & retry dispatcher, build/scheduler.Dockerfile)
+services: {}
