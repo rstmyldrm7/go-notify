@@ -19,7 +19,7 @@ run-scheduler:
 	go run ./cmd/scheduler
 
 up:
-	docker-compose up --build
+	docker compose up --build
 
 down:
-	docker-compose down -v
+	docker compose down -v

@@ -1,0 +1,299 @@
+package storage
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/rstmyldrm7/go-notify/internal/domain"
+)
+
+// ErrNotFound is returned when a notification does not exist.
+var ErrNotFound = errors.New("notification not found")
+
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+func NewRepository(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+func (r *Repository) Ping(ctx context.Context) error {
+	return r.pool.Ping(ctx)
+}
+
+const notificationColumns = `
+	id, batch_id, idempotency_key, recipient, channel, content, priority, status,
+	attempt_count, next_retry_at, scheduled_at, last_error, provider_message_id,
+	created_at, updated_at, sent_at`
+
+func scanNotification(row pgx.Row) (*domain.Notification, error) {
+	var n domain.Notification
+	err := row.Scan(
+		&n.ID, &n.BatchID, &n.IdempotencyKey, &n.Recipient, &n.Channel, &n.Content,
+		&n.Priority, &n.Status, &n.AttemptCount, &n.NextRetryAt, &n.ScheduledAt,
+		&n.LastError, &n.ProviderMessageID, &n.CreatedAt, &n.UpdatedAt, &n.SentAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+// The conflict target must match the partial unique index on idempotency_key,
+// hence the WHERE clause. Rows without a key never conflict.
+const insertNotificationSQL = `
+	INSERT INTO notifications
+		(id, batch_id, idempotency_key, recipient, channel, content, priority, status, scheduled_at, created_at, updated_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+	ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+	RETURNING` + notificationColumns
+
+func insertArgs(n *domain.Notification) []any {
+	return []any{
+		n.ID, n.BatchID, n.IdempotencyKey, n.Recipient, n.Channel, n.Content,
+		n.Priority, n.Status, n.ScheduledAt, n.CreatedAt,
+	}
+}
+
+// CreateResult distinguishes a fresh insert from an idempotency replay.
+type CreateResult struct {
+	Notification *domain.Notification
+	// Duplicate is true when the idempotency key was already used; in that
+	// case Notification holds the previously stored record.
+	Duplicate bool
+}
+
+// Create inserts a notification. Idempotency is enforced atomically by the
+// unique index: concurrent requests with the same key can never both insert.
+func (r *Repository) Create(ctx context.Context, n *domain.Notification) (CreateResult, error) {
+	created, err := scanNotification(r.pool.QueryRow(ctx, insertNotificationSQL, insertArgs(n)...))
+	if err == nil {
+		return CreateResult{Notification: created}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return CreateResult{}, fmt.Errorf("insert notification: %w", err)
+	}
+	// DO NOTHING fired: the key exists. Return the original record.
+	existing, err := r.getByIdempotencyKey(ctx, *n.IdempotencyKey)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	return CreateResult{Notification: existing, Duplicate: true}, nil
+}
+
+// CreateBatch inserts up to the API's batch limit in a single pipelined
+// round trip inside one transaction. Per-item idempotency conflicts are
+// resolved to the existing records, mirroring Create.
+func (r *Repository) CreateBatch(ctx context.Context, ns []*domain.Notification) ([]CreateResult, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	batch := &pgx.Batch{}
+	for _, n := range ns {
+		batch.Queue(insertNotificationSQL, insertArgs(n)...)
+	}
+	br := tx.SendBatch(ctx, batch)
+
+	results := make([]CreateResult, len(ns))
+	var duplicateKeys []string
+	for i := range ns {
+		created, err := scanNotification(br.QueryRow())
+		switch {
+		case err == nil:
+			results[i] = CreateResult{Notification: created}
+		case errors.Is(err, pgx.ErrNoRows):
+			results[i] = CreateResult{Duplicate: true}
+			duplicateKeys = append(duplicateKeys, *ns[i].IdempotencyKey)
+		default:
+			br.Close()
+			return nil, fmt.Errorf("batch insert item %d: %w", i, err)
+		}
+	}
+	if err := br.Close(); err != nil {
+		return nil, fmt.Errorf("close batch: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	if len(duplicateKeys) > 0 {
+		existing, err := r.getByIdempotencyKeys(ctx, duplicateKeys)
+		if err != nil {
+			return nil, err
+		}
+		for i, res := range results {
+			if res.Duplicate {
+				results[i].Notification = existing[*ns[i].IdempotencyKey]
+			}
+		}
+	}
+	return results, nil
+}
+
+func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Notification, error) {
+	n, err := scanNotification(r.pool.QueryRow(ctx,
+		`SELECT`+notificationColumns+` FROM notifications WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get notification: %w", err)
+	}
+	return n, nil
+}
+
+func (r *Repository) getByIdempotencyKey(ctx context.Context, key string) (*domain.Notification, error) {
+	n, err := scanNotification(r.pool.QueryRow(ctx,
+		`SELECT`+notificationColumns+` FROM notifications WHERE idempotency_key = $1`, key))
+	if err != nil {
+		return nil, fmt.Errorf("get by idempotency key: %w", err)
+	}
+	return n, nil
+}
+
+func (r *Repository) getByIdempotencyKeys(ctx context.Context, keys []string) (map[string]*domain.Notification, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT`+notificationColumns+` FROM notifications WHERE idempotency_key = ANY($1)`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("get by idempotency keys: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]*domain.Notification, len(keys))
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[*n.IdempotencyKey] = n
+	}
+	return out, rows.Err()
+}
+
+// MarkQueued transitions freshly published notifications from pending to
+// queued. The status guard keeps scheduled/cancelled rows untouched.
+func (r *Repository) MarkQueued(ctx context.Context, ids []uuid.UUID) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE notifications SET status = 'queued', updated_at = now()
+		 WHERE id = ANY($1) AND status = 'pending'`, ids)
+	if err != nil {
+		return fmt.Errorf("mark queued: %w", err)
+	}
+	return nil
+}
+
+// CancelOutcome describes what happened during a cancel attempt.
+type CancelOutcome struct {
+	Notification *domain.Notification
+	Cancelled    bool
+}
+
+// Cancel atomically cancels a notification if it is still cancellable.
+// The conditional UPDATE is the real guard against racing workers: once a
+// worker claims the row (status=processing) this matches zero rows.
+func (r *Repository) Cancel(ctx context.Context, id uuid.UUID) (CancelOutcome, error) {
+	n, err := scanNotification(r.pool.QueryRow(ctx,
+		`UPDATE notifications SET status = 'cancelled', updated_at = now()
+		 WHERE id = $1 AND status IN ('pending', 'queued', 'scheduled')
+		 RETURNING`+notificationColumns, id))
+	if err == nil {
+		return CancelOutcome{Notification: n, Cancelled: true}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return CancelOutcome{}, fmt.Errorf("cancel notification: %w", err)
+	}
+	// Either it does not exist or it is past the point of no return.
+	current, err := r.GetByID(ctx, id)
+	if err != nil {
+		return CancelOutcome{}, err
+	}
+	return CancelOutcome{Notification: current, Cancelled: false}, nil
+}
+
+// ListFilter narrows and paginates the list endpoint (page/offset based).
+type ListFilter struct {
+	Status  *domain.Status
+	Channel *domain.Channel
+	From    *time.Time
+	To      *time.Time
+
+	Limit  int
+	Offset int
+}
+
+func (r *Repository) List(ctx context.Context, f ListFilter) ([]*domain.Notification, error) {
+	var (
+		conds []string
+		args  []any
+	)
+	next := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	if f.Status != nil {
+		conds = append(conds, "status = "+next(*f.Status))
+	}
+	if f.Channel != nil {
+		conds = append(conds, "channel = "+next(*f.Channel))
+	}
+	if f.From != nil {
+		conds = append(conds, "created_at >= "+next(*f.From))
+	}
+	if f.To != nil {
+		conds = append(conds, "created_at <= "+next(*f.To))
+	}
+	query := `SELECT` + notificationColumns + ` FROM notifications`
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+	query += " ORDER BY created_at DESC, id DESC LIMIT " + next(f.Limit) + " OFFSET " + next(f.Offset)
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list notifications: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*domain.Notification
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// BatchSummary returns the status breakdown of a batch.
+func (r *Repository) BatchSummary(ctx context.Context, batchID uuid.UUID) (map[domain.Status]int, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT status, count(*) FROM notifications WHERE batch_id = $1 GROUP BY status`, batchID)
+	if err != nil {
+		return nil, fmt.Errorf("batch summary: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[domain.Status]int)
+	for rows.Next() {
+		var status domain.Status
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		out[status] = count
+	}
+	return out, rows.Err()
+}
