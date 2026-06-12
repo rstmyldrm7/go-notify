@@ -4,13 +4,19 @@ import (
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/rstmyldrm7/go-notify/internal/metrics"
 )
 
 func NewRouter(h *Handler, log *slog.Logger) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery(), CorrelationID(), RequestLogger(log))
+	// Metrics first so it times the full chain, including panics that Recovery
+	// turns into 500s.
+	r.Use(Metrics(), gin.Recovery(), CorrelationID(), RequestLogger(log))
 
 	r.GET("/healthz", h.Healthz)
+	r.GET("/metrics", gin.WrapH(metrics.Handler()))
+	registerDocs(r)
 
 	v1 := r.Group("/api/v1")
 	{

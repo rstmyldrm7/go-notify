@@ -1,0 +1,394 @@
+openapi: 3.0.3
+info:
+  title: go-notify API
+  version: "1.0.0"
+  description: |
+    Event-driven notification system. Accepts notification requests (single or
+    batch up to 1000), persists them, and dispatches them to the delivery
+    pipeline via Kafka.
+
+    **Correlation IDs:** send `X-Correlation-ID` to trace a request across
+    services; if omitted one is generated. Every response echoes it back in the
+    `X-Correlation-ID` header.
+
+    **Idempotency:** supply an `Idempotency-Key` (header for single create,
+    `idempotency_key` field per item for batch). Replaying the same key with an
+    identical payload returns the original record; reusing it with a different
+    payload is rejected with `409`.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness/readiness probe
+      operationId: healthz
+      tags: [system]
+      responses:
+        "200":
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+        "503":
+          description: Database unreachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: degraded }
+                  database: { type: string, example: unreachable }
+
+  /api/v1/notifications:
+    post:
+      summary: Create a notification
+      operationId: createNotification
+      tags: [notifications]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNotificationRequest'
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        "200":
+          description: |
+            Idempotency replay — the key was already used with an identical
+            payload. Carries the `Idempotency-Replayed: true` header.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        "400":
+          description: Malformed JSON body
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "409":
+          description: Idempotency key already used with a different payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      summary: List notifications
+      operationId: listNotifications
+      tags: [notifications]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/Status' }
+        - name: channel
+          in: query
+          schema: { $ref: '#/components/schemas/Channel' }
+        - name: from
+          in: query
+          description: Inclusive lower bound on created_at (RFC3339).
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Inclusive upper bound on created_at (RFC3339).
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          description: Page size.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: page
+          in: query
+          description: 1-based page number.
+          schema: { type: integer, minimum: 1, default: 1 }
+      responses:
+        "200":
+          description: A page of notifications
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListResponse' }
+        "400":
+          description: Invalid query parameter
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/notifications/batch:
+    post:
+      summary: Create up to 1000 notifications in one request
+      operationId: createBatch
+      tags: [notifications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBatchRequest' }
+      responses:
+        "201":
+          description: Batch accepted (may include idempotent duplicates)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateBatchResponse' }
+        "400":
+          description: Empty batch, over the 1000 limit, or malformed JSON
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "422":
+          description: Validation failed for one of the items
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/notifications/{id}:
+    get:
+      summary: Get a notification by id
+      operationId: getNotification
+      tags: [notifications]
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        "200":
+          description: The notification
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        "400":
+          description: Id is not a valid UUID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      summary: Cancel a pending notification
+      operationId: cancelNotification
+      tags: [notifications]
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        "200":
+          description: Cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        "400":
+          description: Id is not a valid UUID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "409":
+          description: Past the point where it can be cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/batches/{id}:
+    get:
+      summary: Get a batch status summary
+      operationId: getBatch
+      tags: [notifications]
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        "200":
+          description: Status breakdown for the batch
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchSummaryResponse' }
+        "400":
+          description: Id is not a valid UUID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "404":
+          description: Batch not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Replay-safe key. Reusing it with a different payload yields 409.
+      schema: { type: string }
+
+  schemas:
+    Channel:
+      type: string
+      enum: [sms, email, push]
+    Priority:
+      type: string
+      enum: [high, normal, low]
+    Status:
+      type: string
+      enum: [pending, queued, processing, sent, failed, dead, cancelled, scheduled]
+
+    CreateNotificationRequest:
+      type: object
+      required: [recipient, channel, content]
+      properties:
+        recipient:
+          type: string
+          maxLength: 320
+          example: "+905551234567"
+        channel: { $ref: '#/components/schemas/Channel' }
+        content:
+          type: string
+          description: |
+            Per-channel character limits: sms 160, push 512, email 10000.
+          example: "Your order has shipped"
+        priority:
+          allOf: [{ $ref: '#/components/schemas/Priority' }]
+          default: normal
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: If set and in the future, the notification is scheduled rather than sent immediately.
+
+    BatchItemRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateNotificationRequest'
+        - type: object
+          properties:
+            idempotency_key: { type: string, nullable: true }
+
+    CreateBatchRequest:
+      type: object
+      required: [notifications]
+      properties:
+        notifications:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/BatchItemRequest' }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        batch_id: { type: string, format: uuid, nullable: true }
+        idempotency_key: { type: string, nullable: true }
+        recipient: { type: string }
+        channel: { $ref: '#/components/schemas/Channel' }
+        content: { type: string }
+        priority: { $ref: '#/components/schemas/Priority' }
+        status: { $ref: '#/components/schemas/Status' }
+        attempt_count: { type: integer }
+        next_retry_at: { type: string, format: date-time, nullable: true }
+        scheduled_at: { type: string, format: date-time, nullable: true }
+        last_error: { type: string, nullable: true }
+        provider_message_id: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        sent_at: { type: string, format: date-time, nullable: true }
+
+    BatchItemResult:
+      type: object
+      properties:
+        index: { type: integer }
+        duplicate: { type: boolean }
+        notification: { $ref: '#/components/schemas/Notification' }
+
+    CreateBatchResponse:
+      type: object
+      properties:
+        batch_id: { type: string, format: uuid }
+        total: { type: integer }
+        created: { type: integer }
+        duplicates: { type: integer }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/BatchItemResult' }
+
+    ListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Notification' }
+        page: { type: integer }
+        limit: { type: integer }
+        has_more: { type: boolean }
+
+    BatchSummaryResponse:
+      type: object
+      properties:
+        batch_id: { type: string, format: uuid }
+        total: { type: integer }
+        counts:
+          type: object
+          additionalProperties: { type: integer }
+          description: Count of notifications per status.
+          example: { queued: 3, sent: 10, failed: 1 }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        details:
+          type: array
+          description: Present on validation errors (422).
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }

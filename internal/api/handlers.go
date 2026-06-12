@@ -12,6 +12,7 @@ import (
 
 	"github.com/rstmyldrm7/go-notify/internal/ctxutil"
 	"github.com/rstmyldrm7/go-notify/internal/domain"
+	"github.com/rstmyldrm7/go-notify/internal/metrics"
 	"github.com/rstmyldrm7/go-notify/internal/queue"
 	"github.com/rstmyldrm7/go-notify/internal/storage"
 )
@@ -43,8 +44,10 @@ func (h *Handler) publishAndQueue(c *gin.Context, ns []*domain.Notification) {
 	if err := h.Publisher.PublishNotifications(ctx, pending); err != nil {
 		h.Log.ErrorContext(ctx, "publish failed, rows stay pending",
 			"count", len(pending), "error", err)
+		metrics.NotificationsPublished.WithLabelValues("failure").Add(float64(len(pending)))
 		return
 	}
+	metrics.NotificationsPublished.WithLabelValues("success").Add(float64(len(pending)))
 
 	ids := make([]uuid.UUID, len(pending))
 	for i, n := range pending {
@@ -105,6 +108,7 @@ func (h *Handler) CreateNotification(c *gin.Context) {
 		return
 	}
 
+	metrics.NotificationsCreated.WithLabelValues(string(res.Notification.Channel), string(res.Notification.Priority)).Inc()
 	h.publishAndQueue(c, []*domain.Notification{res.Notification})
 	c.JSON(http.StatusCreated, res.Notification)
 }
@@ -165,6 +169,7 @@ func (h *Handler) CreateBatch(c *gin.Context) {
 		} else {
 			resp.Created++
 			fresh = append(fresh, res.Notification)
+			metrics.NotificationsCreated.WithLabelValues(string(res.Notification.Channel), string(res.Notification.Priority)).Inc()
 		}
 		resp.Items = append(resp.Items, batchItemResult{
 			Index: i, Duplicate: res.Duplicate, Notification: res.Notification,

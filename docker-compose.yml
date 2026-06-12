@@ -93,6 +93,21 @@ services:
       kafka-init:
         condition: service_completed_successfully
 
+  # Self-contained stand-in for the external provider (webhook.site). Replies
+  # with the documented 202 acknowledgement so the system runs end to end with
+  # no external dependency. Set MOCK_FAIL_RATE to demo retry/DLQ.
+  mock-provider:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+      args:
+        SERVICE: mockprovider
+    ports:
+      - "8081:8080"
+    environment:
+      MOCK_ADDR: ":8080"
+      MOCK_FAIL_RATE: "0"
+
   worker:
     build:
       context: .
@@ -106,13 +121,16 @@ services:
       KAFKA_BROKERS: "kafka:19092"
       APP_ENV: "production"
       METRICS_ADDR: ":9100"
-      # Your webhook.site URL — required. Set PROVIDER_URL in .env.
-      PROVIDER_URL: "${PROVIDER_URL}"
+      # Defaults to the bundled mock provider. Override PROVIDER_URL in .env to
+      # deliver to a real endpoint (e.g. your webhook.site URL).
+      PROVIDER_URL: "${PROVIDER_URL:-http://mock-provider:8080}"
     depends_on:
       postgres:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      mock-provider:
+        condition: service_started
 
   scheduler:
     build:
