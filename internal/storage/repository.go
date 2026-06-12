@@ -31,14 +31,14 @@ func (r *Repository) Ping(ctx context.Context) error {
 
 const notificationColumns = `
 	id, batch_id, idempotency_key, recipient, channel, content, priority, status,
-	attempt_count, next_retry_at, scheduled_at, last_error, provider_message_id,
+	attempt_count, scheduled_at, last_error, provider_message_id,
 	created_at, updated_at, sent_at`
 
 func scanNotification(row pgx.Row) (*domain.Notification, error) {
 	var n domain.Notification
 	err := row.Scan(
 		&n.ID, &n.BatchID, &n.IdempotencyKey, &n.Recipient, &n.Channel, &n.Content,
-		&n.Priority, &n.Status, &n.AttemptCount, &n.NextRetryAt, &n.ScheduledAt,
+		&n.Priority, &n.Status, &n.AttemptCount, &n.ScheduledAt,
 		&n.LastError, &n.ProviderMessageID, &n.CreatedAt, &n.UpdatedAt, &n.SentAt,
 	)
 	if err != nil {
@@ -202,7 +202,7 @@ func (r *Repository) MarkProcessing(ctx context.Context, id uuid.UUID) (bool, er
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE notifications
 		    SET status = 'processing', attempt_count = attempt_count + 1, updated_at = now()
-		  WHERE id = $1 AND status IN ('queued', 'pending', 'failed')`, id)
+		  WHERE id = $1 AND status IN ('queued', 'pending')`, id)
 	if err != nil {
 		return false, fmt.Errorf("mark processing: %w", err)
 	}

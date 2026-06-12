@@ -279,7 +279,7 @@ components:
       enum: [high, normal, low]
     Status:
       type: string
-      enum: [pending, queued, processing, sent, failed, dead, cancelled, scheduled]
+      enum: [pending, queued, processing, sent, dead, cancelled, scheduled]
 
     CreateNotificationRequest:
       type: object
@@ -333,7 +333,6 @@ components:
         priority: { $ref: '#/components/schemas/Priority' }
         status: { $ref: '#/components/schemas/Status' }
         attempt_count: { type: integer }
-        next_retry_at: { type: string, format: date-time, nullable: true }
         scheduled_at: { type: string, format: date-time, nullable: true }
         last_error: { type: string, nullable: true }
         provider_message_id: { type: string, nullable: true }

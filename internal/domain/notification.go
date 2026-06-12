@@ -38,7 +38,7 @@ var (
 //
 //	pending ──▶ queued ──▶ processing ──▶ sent
 //	   │                        │
-//	   │                        └──▶ failed ──▶ (queued again)  or  ──▶ dead
+//	   │                        └──▶ dead (in-memory retries exhausted → DLQ)
 //	   └──▶ cancelled
 //	scheduled ──▶ queued (dispatched by the scheduler when due)
 type Status string
@@ -48,7 +48,6 @@ const (
 	StatusQueued     Status = "queued"     // published to Kafka, waiting for a worker
 	StatusProcessing Status = "processing" // claimed by a worker, delivery in flight
 	StatusSent       Status = "sent"       // provider accepted the message
-	StatusFailed     Status = "failed"     // transient failure, waiting for retry
 	StatusDead       Status = "dead"       // retries exhausted or permanent failure (DLQ)
 	StatusCancelled  Status = "cancelled"  // cancelled by the client before delivery
 	StatusScheduled  Status = "scheduled"  // future-dated, waiting for the scheduler
@@ -67,7 +66,6 @@ type Notification struct {
 	Status    Status   `json:"status"`
 
 	AttemptCount int        `json:"attempt_count"`
-	NextRetryAt  *time.Time `json:"next_retry_at,omitempty"`
 	ScheduledAt  *time.Time `json:"scheduled_at,omitempty"`
 	LastError    *string    `json:"last_error,omitempty"`
 

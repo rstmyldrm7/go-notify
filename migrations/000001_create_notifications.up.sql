@@ -10,7 +10,6 @@ CREATE TABLE notifications (
     status              TEXT NOT NULL DEFAULT 'pending',
 
     attempt_count       INT  NOT NULL DEFAULT 0,
-    next_retry_at       TIMESTAMPTZ,
     scheduled_at        TIMESTAMPTZ,
     last_error          TEXT,
 
@@ -25,7 +24,7 @@ CREATE TABLE notifications (
     CONSTRAINT chk_notifications_priority
         CHECK (priority IN ('high', 'normal', 'low')),
     CONSTRAINT chk_notifications_status
-        CHECK (status IN ('pending', 'queued', 'processing', 'sent', 'failed', 'dead', 'cancelled', 'scheduled'))
+        CHECK (status IN ('pending', 'queued', 'processing', 'sent', 'dead', 'cancelled', 'scheduled'))
 );
 
 -- Idempotency: enforced by the database, not application code. Partial index
@@ -42,11 +41,6 @@ CREATE INDEX ix_notifications_batch_id
 -- List endpoint: filter by status/channel, newest first, cursor pagination.
 CREATE INDEX ix_notifications_list
     ON notifications (status, channel, created_at DESC, id DESC);
-
--- Scheduler polls: retries that are due.
-CREATE INDEX ix_notifications_retry_due
-    ON notifications (next_retry_at)
-    WHERE status = 'failed' AND next_retry_at IS NOT NULL;
 
 -- Scheduler polls: future-dated notifications that are due.
 CREATE INDEX ix_notifications_scheduled
