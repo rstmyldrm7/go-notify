@@ -14,23 +14,44 @@ import (
 	"github.com/rstmyldrm7/go-notify/internal/domain"
 )
 
-// Kafka has no native priority support, so each priority level gets its own
-// topic and workers drain high before normal before low.
-const (
-	TopicHigh   = "notifications.high"
-	TopicNormal = "notifications.normal"
-	TopicLow    = "notifications.low"
-)
+// Kafka has no native priority support and each channel must be isolated, so
+// the topic name encodes both dimensions: "<channel>.<priority>", e.g.
+// "sms.high". This gives the 9-topic channel × priority matrix. Each channel
+// also owns a dead-letter topic, "<channel>.dlq".
+//
+// Workers run one pool per channel and, within a pool, drain high before
+// normal before low.
+func TopicFor(channel domain.Channel, priority domain.Priority) string {
+	return string(channel) + "." + priorityName(priority)
+}
 
-func TopicForPriority(p domain.Priority) string {
+// DLQTopic is the dead-letter topic for a channel, e.g. "sms.dlq".
+func DLQTopic(channel domain.Channel) string {
+	return string(channel) + ".dlq"
+}
+
+func priorityName(p domain.Priority) string {
 	switch p {
 	case domain.PriorityHigh:
-		return TopicHigh
+		return "high"
 	case domain.PriorityLow:
-		return TopicLow
+		return "low"
 	default:
-		return TopicNormal
+		return "normal"
 	}
+}
+
+// AllTopics enumerates every channel × priority work topic plus the per-channel
+// DLQ topics. Used to provision Kafka and by operational tooling.
+func AllTopics() []string {
+	topics := make([]string, 0, len(domain.AllChannels)*(len(domain.AllPriorities)+1))
+	for _, c := range domain.AllChannels {
+		for _, p := range domain.AllPriorities {
+			topics = append(topics, TopicFor(c, p))
+		}
+		topics = append(topics, DLQTopic(c))
+	}
+	return topics
 }
 
 const correlationIDHeader = "correlation_id"
@@ -93,7 +114,7 @@ func (p *KafkaPublisher) PublishNotifications(ctx context.Context, ns []*domain.
 			return fmt.Errorf("marshal notification %s: %w", n.ID, err)
 		}
 		msgs[i] = kafka.Message{
-			Topic:   TopicForPriority(n.Priority),
+			Topic:   TopicFor(n.Channel, n.Priority),
 			Key:     []byte(n.Recipient),
 			Value:   value,
 			Headers: headers,

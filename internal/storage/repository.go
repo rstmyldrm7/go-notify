@@ -193,6 +193,126 @@ func (r *Repository) MarkQueued(ctx context.Context, ids []uuid.UUID) error {
 	return nil
 }
 
+// MarkProcessing atomically claims a notification for delivery, moving it to
+// 'processing' and bumping attempt_count. It returns false when the row is no
+// longer claimable — already sent/dead, or cancelled by the client while it sat
+// in Kafka — so the worker can skip the send and just advance the offset. This
+// conditional UPDATE is the real guard against delivering a cancelled message.
+func (r *Repository) MarkProcessing(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE notifications
+		    SET status = 'processing', attempt_count = attempt_count + 1, updated_at = now()
+		  WHERE id = $1 AND status IN ('queued', 'pending', 'failed')`, id)
+	if err != nil {
+		return false, fmt.Errorf("mark processing: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// MarkSent records a successful delivery and the provider's message id.
+func (r *Repository) MarkSent(ctx context.Context, id uuid.UUID, providerMessageID string) error {
+	var provID *string
+	if providerMessageID != "" {
+		provID = &providerMessageID
+	}
+	_, err := r.pool.Exec(ctx,
+		`UPDATE notifications
+		    SET status = 'sent', provider_message_id = $2, sent_at = now(),
+		        last_error = NULL, updated_at = now()
+		  WHERE id = $1`, id, provID)
+	if err != nil {
+		return fmt.Errorf("mark sent: %w", err)
+	}
+	return nil
+}
+
+// MarkDead records a notification whose in-memory retries were exhausted (or
+// that failed permanently) and has been offloaded to the DLQ.
+func (r *Repository) MarkDead(ctx context.Context, id uuid.UUID, lastError string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE notifications
+		    SET status = 'dead', last_error = $2, updated_at = now()
+		  WHERE id = $1`, id, lastError)
+	if err != nil {
+		return fmt.Errorf("mark dead: %w", err)
+	}
+	return nil
+}
+
+// DispatchDue claims up to limit notifications that are due — scheduled and
+// past their scheduled_at — publishes them via the supplied callback while they
+// are still locked, and on success transitions them to 'queued'. It returns the
+// number dispatched.
+//
+// Correctness/concurrency notes:
+//   - FOR UPDATE SKIP LOCKED lets several scheduler instances run concurrently
+//     without ever claiming the same row, so the poller scales horizontally.
+//   - publish runs inside the transaction (rows locked, not yet 'queued'). If
+//     it fails we roll back and the rows stay 'scheduled' for the next tick, so
+//     a message is never marked queued without having reached Kafka. The cost
+//     is holding the transaction open across the Kafka write; acceptable for a
+//     bounded batch on a low-frequency poller.
+//   - If publish succeeds but the commit is lost, the rows replay next tick and
+//     are published again — at-least-once. The worker's MarkProcessing guard
+//     makes the duplicate harmless.
+func (r *Repository) DispatchDue(
+	ctx context.Context,
+	now time.Time,
+	limit int,
+	publish func(context.Context, []*domain.Notification) error,
+) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx,
+		`SELECT`+notificationColumns+`
+		   FROM notifications
+		  WHERE status = 'scheduled' AND scheduled_at <= $1
+		  ORDER BY scheduled_at
+		  LIMIT $2
+		  FOR UPDATE SKIP LOCKED`, now, limit)
+	if err != nil {
+		return 0, fmt.Errorf("select due notifications: %w", err)
+	}
+
+	var due []*domain.Notification
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			rows.Close()
+			return 0, err
+		}
+		due = append(due, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(due) == 0 {
+		return 0, nil
+	}
+
+	if err := publish(ctx, due); err != nil {
+		return 0, fmt.Errorf("publish due notifications: %w", err) // rolled back by defer
+	}
+
+	ids := make([]uuid.UUID, len(due))
+	for i, n := range due {
+		ids[i] = n.ID
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE notifications SET status = 'queued', updated_at = now() WHERE id = ANY($1)`, ids); err != nil {
+		return 0, fmt.Errorf("mark due queued: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit due dispatch: %w", err)
+	}
+	return len(due), nil
+}
+
 // CancelOutcome describes what happened during a cancel attempt.
 type CancelOutcome struct {
 	Notification *domain.Notification

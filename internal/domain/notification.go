@@ -25,6 +25,14 @@ const (
 	PriorityLow    Priority = "low"
 )
 
+// AllChannels and AllPriorities enumerate every valid value. They drive the
+// full set of Kafka topics (channel × priority) and let the worker spin up one
+// isolated pool per channel without hard-coding the matrix in several places.
+var (
+	AllChannels   = []Channel{ChannelSMS, ChannelEmail, ChannelPush}
+	AllPriorities = []Priority{PriorityHigh, PriorityNormal, PriorityLow}
+)
+
 // Status is the lifecycle state of a notification. The database row is the
 // single source of truth; Kafka messages only carry work, never state.
 //
