@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rstmyldrm7/go-notify/internal/domain"
 	"github.com/rstmyldrm7/go-notify/internal/queue"
 )
@@ -33,12 +36,8 @@ func TestNextStrictPriority(t *testing.T) {
 	want := []string{"h1", "h2", "n1", "n2", "l1", "l2"}
 	for i, w := range want {
 		j, ok := p.next(context.Background())
-		if !ok {
-			t.Fatalf("next returned !ok at step %d", i)
-		}
-		if got := j.msg.Recipient; got != w {
-			t.Fatalf("step %d: got %q, want %q", i, got, w)
-		}
+		require.Truef(t, ok, "next returned !ok at step %d", i)
+		assert.Equalf(t, w, j.msg.Recipient, "wrong job at step %d", i)
 	}
 }
 
@@ -53,7 +52,6 @@ func TestNextUnblocksOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, ok := p.next(ctx); ok {
-		t.Fatal("expected next to report shutdown (ok=false) on cancelled context")
-	}
+	_, ok := p.next(ctx)
+	assert.False(t, ok, "next should report shutdown (ok=false) on cancelled context")
 }

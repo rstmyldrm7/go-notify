@@ -291,6 +291,33 @@ PROVIDER_URL=http://localhost:8081 go run ./cmd/worker
 Image builds use BuildKit cache mounts for the Go module and build caches —
 after the first build, code-only rebuilds take seconds.
 
+## Testing
+
+```bash
+make test        # go test ./...
+go test ./... -v # verbose
+```
+
+Tests run on the standard `testing` package with table-driven cases, using
+[testify](https://github.com/stretchr/testify) (`require`/`assert`) for concise
+assertions. They are pure unit tests — no database or broker required:
+
+- **`domain`** — validation rules, per-channel content limits (rune-aware), the
+  scheduled-vs-immediate status branch, and aggregated error reporting.
+- **`api`** — the behaviors that matter most: idempotency replay (`200` +
+  `Idempotency-Replayed`), key reuse with a different payload (`409`),
+  validation (`422`) and cancel races (`409`). Handlers depend on a
+  consumer-side `Repository` interface, so they are driven by a small
+  hand-rolled fake instead of a live database.
+- **`provider`** — retryable (5xx, 429) vs permanent (4xx) classification,
+  exercised against an `httptest` server.
+- **`worker`** — strict priority draining (high before normal before low) and
+  clean shutdown on context cancellation.
+
+Repository-layer SQL (idempotent insert, `DispatchDue`, `ReapStuck`) is
+integration territory and is intentionally left for a Postgres-backed suite
+rather than mocked.
+
 ## Repository layout
 
 ```

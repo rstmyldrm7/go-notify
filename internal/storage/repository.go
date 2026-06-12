@@ -317,9 +317,9 @@ func (r *Repository) DispatchDue(
 // edge case, making the database — not the Kafka offset — the source of truth:
 //
 //   - 'pending'    : the API failed to publish it. It never reached Kafka, so
-//                    re-publishing cannot duplicate it (short pendingAfter).
+//     re-publishing cannot duplicate it (short pendingAfter).
 //   - 'queued'     : published but never delivered (e.g. lost to an out-of-order
-//                    offset commit, or a topic with no live consumer).
+//     offset commit, or a topic with no live consumer).
 //   - 'processing' : a worker claimed it then died before a terminal state.
 //
 // inflightAfter must exceed the worst-case delivery time, since a 'queued' or

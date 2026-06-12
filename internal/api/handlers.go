@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -19,8 +20,22 @@ import (
 
 const idempotencyKeyHeader = "Idempotency-Key"
 
+// Repository is the persistence surface the handlers depend on. It is declared
+// here, on the consumer side (the Go idiom), so the handlers can be unit-tested
+// against a fake; *storage.Repository satisfies it structurally.
+type Repository interface {
+	Create(ctx context.Context, n *domain.Notification) (storage.CreateResult, error)
+	CreateBatch(ctx context.Context, ns []*domain.Notification) ([]storage.CreateResult, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.Notification, error)
+	List(ctx context.Context, f storage.ListFilter) ([]*domain.Notification, error)
+	Cancel(ctx context.Context, id uuid.UUID) (storage.CancelOutcome, error)
+	BatchSummary(ctx context.Context, id uuid.UUID) (map[domain.Status]int, error)
+	MarkQueued(ctx context.Context, ids []uuid.UUID) error
+	Ping(ctx context.Context) error
+}
+
 type Handler struct {
-	Repo      *storage.Repository
+	Repo      Repository
 	Publisher queue.Publisher
 	Log       *slog.Logger
 }
