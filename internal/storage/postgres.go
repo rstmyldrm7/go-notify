@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/exaring/otelpgx"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -14,9 +15,17 @@ import (
 	"github.com/rstmyldrm7/go-notify/migrations"
 )
 
-// NewPool opens a pgx connection pool and verifies connectivity.
+// NewPool opens a pgx connection pool and verifies connectivity. The pool is
+// wired with otelpgx so every query becomes a span under the caller's active
+// trace; when tracing is disabled the tracer is a cheap no-op.
 func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse database url: %w", err)
+	}
+	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
 	}

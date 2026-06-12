@@ -7,9 +7,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/rstmyldrm7/go-notify/internal/ctxutil"
 	"github.com/rstmyldrm7/go-notify/internal/metrics"
+	"github.com/rstmyldrm7/go-notify/internal/observ"
 )
 
 const correlationIDHeader = "X-Correlation-ID"
@@ -25,6 +28,9 @@ func CorrelationID() gin.HandlerFunc {
 		c.Writer.Header().Set(correlationIDHeader, id)
 		c.Request = c.Request.WithContext(
 			ctxutil.WithCorrelationID(c.Request.Context(), id))
+		// Tag the server span so a trace can be found by correlation id.
+		trace.SpanFromContext(c.Request.Context()).
+			SetAttributes(attribute.String("correlation_id", id))
 		c.Next()
 	}
 }
@@ -61,6 +67,7 @@ func RequestLogger(log *slog.Logger) gin.HandlerFunc {
 			"status", c.Writer.Status(),
 			"duration_ms", time.Since(start).Milliseconds(),
 			"correlation_id", ctxutil.CorrelationID(c.Request.Context()),
+			"trace_id", observ.TraceID(c.Request.Context()),
 		)
 	}
 }

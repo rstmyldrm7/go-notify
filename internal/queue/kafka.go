@@ -9,9 +9,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/rstmyldrm7/go-notify/internal/ctxutil"
 	"github.com/rstmyldrm7/go-notify/internal/domain"
+	"github.com/rstmyldrm7/go-notify/internal/observ"
 )
 
 // Kafka has no native priority support and each channel must be isolated, so
@@ -95,10 +99,22 @@ func (p *KafkaPublisher) PublishNotifications(ctx context.Context, ns []*domain.
 		return nil
 	}
 
+	// One producer span covers the whole batch write; its context is injected
+	// into every message so each consumer resumes the same trace.
+	ctx, span := otel.Tracer(observ.Tracer).Start(ctx, "kafka.publish",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "kafka"),
+			attribute.Int("messaging.batch.message_count", len(ns)),
+		),
+	)
+	defer span.End()
+
 	headers := []kafka.Header{}
 	if cid := ctxutil.CorrelationID(ctx); cid != "" {
 		headers = append(headers, kafka.Header{Key: correlationIDHeader, Value: []byte(cid)})
 	}
+	injectTrace(ctx, &headers)
 
 	msgs := make([]kafka.Message, len(ns))
 	for i, n := range ns {
@@ -122,6 +138,7 @@ func (p *KafkaPublisher) PublishNotifications(ctx context.Context, ns []*domain.
 	}
 
 	if err := p.writer.WriteMessages(ctx, msgs...); err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("write to kafka: %w", err)
 	}
 	p.log.DebugContext(ctx, "published to kafka", "count", len(msgs))

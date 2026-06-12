@@ -13,6 +13,7 @@ import (
 
 	"github.com/rstmyldrm7/go-notify/internal/config"
 	"github.com/rstmyldrm7/go-notify/internal/metrics"
+	"github.com/rstmyldrm7/go-notify/internal/observ"
 	"github.com/rstmyldrm7/go-notify/internal/queue"
 	"github.com/rstmyldrm7/go-notify/internal/scheduler"
 	"github.com/rstmyldrm7/go-notify/internal/storage"
@@ -37,6 +38,12 @@ func main() {
 func run(cfg config.Config, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	shutdownTracer, err := observ.InitTracer(ctx, "notify-scheduler", cfg.OTLPEndpoint, log)
+	if err != nil {
+		return err
+	}
+	defer observ.FlushOnShutdown(shutdownTracer)
 
 	pool, err := storage.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {

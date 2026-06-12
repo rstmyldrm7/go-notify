@@ -30,3 +30,6 @@ go.work.sum
 # Editor/IDE
 .idea/
 # .vscode/
+
+# Claude Code local settings (personal; shared config in .claude/ can be committed)
+.claude/settings.local.json

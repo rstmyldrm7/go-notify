@@ -14,6 +14,7 @@ import (
 
 	"github.com/rstmyldrm7/go-notify/internal/api"
 	"github.com/rstmyldrm7/go-notify/internal/config"
+	"github.com/rstmyldrm7/go-notify/internal/observ"
 	"github.com/rstmyldrm7/go-notify/internal/queue"
 	"github.com/rstmyldrm7/go-notify/internal/storage"
 )
@@ -38,6 +39,12 @@ func main() {
 func run(cfg config.Config, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	shutdownTracer, err := observ.InitTracer(ctx, "notify-api", cfg.OTLPEndpoint, log)
+	if err != nil {
+		return err
+	}
+	defer observ.FlushOnShutdown(shutdownTracer)
 
 	if cfg.MigrateOnStart {
 		if err := storage.RunMigrations(cfg.DatabaseURL); err != nil {

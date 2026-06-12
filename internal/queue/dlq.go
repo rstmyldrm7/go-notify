@@ -7,8 +7,11 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/rstmyldrm7/go-notify/internal/domain"
+	"github.com/rstmyldrm7/go-notify/internal/observ"
 )
 
 // DLQEnvelope wraps a notification that could not be delivered together with
@@ -43,15 +46,24 @@ func NewDLQProducer(brokers []string) *DLQProducer {
 
 // Publish writes env to the dead-letter topic of channel, e.g. "sms.dlq".
 func (p *DLQProducer) Publish(ctx context.Context, channel domain.Channel, env DLQEnvelope) error {
+	ctx, span := otel.Tracer(observ.Tracer).Start(ctx, "kafka.dlq.publish",
+		trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+
 	value, err := json.Marshal(env)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("marshal dlq envelope: %w", err)
 	}
+	headers := []kafka.Header{}
+	injectTrace(ctx, &headers)
 	if err := p.writer.WriteMessages(ctx, kafka.Message{
-		Topic: DLQTopic(channel),
-		Key:   []byte(env.Original.Recipient),
-		Value: value,
+		Topic:   DLQTopic(channel),
+		Key:     []byte(env.Original.Recipient),
+		Value:   value,
+		Headers: headers,
 	}); err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("write to dlq: %w", err)
 	}
 	return nil

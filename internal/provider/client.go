@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/rstmyldrm7/go-notify/internal/domain"
 )
 
@@ -56,8 +58,14 @@ type Client struct {
 // per-request timeout.
 func New(url string, timeout time.Duration) *Client {
 	return &Client{
-		url:  url,
-		http: &http.Client{Timeout: timeout},
+		url: url,
+		http: &http.Client{
+			Timeout: timeout,
+			// otelhttp emits a client span per delivery and injects the trace
+			// context, so the provider call shows up under the worker's
+			// processing span in the trace waterfall.
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		},
 	}
 }
 

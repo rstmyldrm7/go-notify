@@ -14,6 +14,7 @@ import (
 	"github.com/rstmyldrm7/go-notify/internal/config"
 	"github.com/rstmyldrm7/go-notify/internal/domain"
 	"github.com/rstmyldrm7/go-notify/internal/metrics"
+	"github.com/rstmyldrm7/go-notify/internal/observ"
 	"github.com/rstmyldrm7/go-notify/internal/provider"
 	"github.com/rstmyldrm7/go-notify/internal/queue"
 	"github.com/rstmyldrm7/go-notify/internal/storage"
@@ -43,6 +44,12 @@ func run(cfg config.Config, log *slog.Logger) error {
 	if cfg.ProviderURL == "" {
 		return errors.New("PROVIDER_URL is required (set it to your webhook.site URL)")
 	}
+
+	shutdownTracer, err := observ.InitTracer(ctx, "notify-worker", cfg.OTLPEndpoint, log)
+	if err != nil {
+		return err
+	}
+	defer observ.FlushOnShutdown(shutdownTracer)
 
 	pool, err := storage.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {

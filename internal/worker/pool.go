@@ -9,10 +9,15 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
 
 	"github.com/rstmyldrm7/go-notify/internal/domain"
 	"github.com/rstmyldrm7/go-notify/internal/metrics"
+	"github.com/rstmyldrm7/go-notify/internal/observ"
 	"github.com/rstmyldrm7/go-notify/internal/provider"
 	"github.com/rstmyldrm7/go-notify/internal/queue"
 	"github.com/rstmyldrm7/go-notify/internal/storage"
@@ -222,10 +227,27 @@ func (p *Pool) next(ctx context.Context) (job, bool) {
 // never stalls on a poison pill.
 func (p *Pool) process(ctx context.Context, j job) {
 	cl := string(p.channel)
+
+	// Resume the trace started by the API/scheduler that produced this message,
+	// so the consumer span nests under the original request. Downstream DB and
+	// provider calls use this context and auto-instrument as child spans.
+	ctx = queue.ExtractTrace(ctx, j.raw)
+	ctx, span := otel.Tracer(observ.Tracer).Start(ctx, "notification.process",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("channel", cl),
+			attribute.String("priority", string(j.priority)),
+			attribute.String("notification.id", j.msg.ID.String()),
+			attribute.String("correlation_id", j.corrID),
+		),
+	)
+	defer span.End()
+
 	log := p.log.With(
 		"priority", string(j.priority),
 		"notification_id", j.msg.ID,
 		"correlation_id", j.corrID,
+		"trace_id", observ.TraceID(ctx),
 	)
 
 	// Claim the row. If it is no longer claimable (cancelled while queued, or
@@ -261,6 +283,7 @@ func (p *Pool) process(ctx context.Context, j job) {
 			log.Error("mark sent failed", "error", err)
 		}
 		metrics.MessagesProcessed.WithLabelValues(cl, string(j.priority), "sent").Inc()
+		span.SetAttributes(attribute.String("outcome", "sent"))
 		log.Info("delivered", "provider_message_id", providerID)
 		p.commit(ctx, j)
 		return
@@ -269,6 +292,9 @@ func (p *Pool) process(ctx context.Context, j job) {
 	// Retries exhausted or a permanent failure: offload to the DLQ rather than
 	// blocking the pipeline, then mark the row dead.
 	log.Warn("delivery failed, routing to DLQ", "error", derr)
+	span.RecordError(derr)
+	span.SetStatus(codes.Error, "delivery failed")
+	span.SetAttributes(attribute.String("outcome", "dead"))
 	env := queue.DLQEnvelope{
 		Original:      j.msg,
 		Error:         derr.Error(),

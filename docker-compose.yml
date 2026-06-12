@@ -87,6 +87,7 @@ services:
       KAFKA_BROKERS: "kafka:19092"
       APP_ENV: "production"
       MIGRATE_ON_START: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "tempo:4317"
     depends_on:
       postgres:
         condition: service_healthy
@@ -121,6 +122,7 @@ services:
       KAFKA_BROKERS: "kafka:19092"
       APP_ENV: "production"
       METRICS_ADDR: ":9100"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "tempo:4317"
       # Defaults to the bundled mock provider. Override PROVIDER_URL in .env to
       # deliver to a real endpoint (e.g. your webhook.site URL).
       PROVIDER_URL: "${PROVIDER_URL:-http://mock-provider:8080}"
@@ -146,11 +148,26 @@ services:
       APP_ENV: "production"
       SCHEDULER_INTERVAL: "5s"
       SCHEDULER_METRICS_ADDR: ":9110"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "tempo:4317"
     depends_on:
       postgres:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+
+  # Grafana Tempo stores distributed traces. Services push spans over OTLP/gRPC
+  # (:4317) directly — no separate collector — and Grafana queries traces over
+  # HTTP (:3200). http://localhost:3200 is the Tempo API; traces are viewed in
+  # Grafana's Explore.
+  tempo:
+    image: grafana/tempo:2.5.0
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./deploy/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempodata:/var/tempo
+    ports:
+      - "3200:3200" # Tempo HTTP API (Grafana datasource)
+      - "4317:4317" # OTLP gRPC ingest
 
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -178,6 +195,8 @@ services:
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+      - tempo
 
 volumes:
   pgdata:
+  tempodata:

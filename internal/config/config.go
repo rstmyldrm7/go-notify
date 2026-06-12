@@ -19,6 +19,9 @@ type Config struct {
 	// MigrateOnStart runs pending SQL migrations during API startup so that
 	// `docker compose up` works without a separate migrate step.
 	MigrateOnStart bool
+	// OTLPEndpoint is the OpenTelemetry collector/Tempo OTLP gRPC endpoint, e.g.
+	// "tempo:4317". Empty disables tracing (the global tracer stays a no-op).
+	OTLPEndpoint string
 
 	// --- Worker / delivery ---
 
@@ -77,6 +80,7 @@ func Load() Config {
 		KafkaBrokers:   strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ","),
 		Env:            getenv("APP_ENV", "development"),
 		MigrateOnStart: getbool("MIGRATE_ON_START", true),
+		OTLPEndpoint:   getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 
 		ConsumerGroupPrefix: getenv("CONSUMER_GROUP_PREFIX", "notify-worker"),
 		ProviderURL:         getenv("PROVIDER_URL", ""),
