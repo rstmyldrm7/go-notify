@@ -1,0 +1,113 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "title": "go-notify",
+  "uid": "go-notify",
+  "version": 1,
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "5s",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "API request rate (req/s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (route, status) (rate(notify_api_http_requests_total[1m]))", "legendFormat": "{{route}} {{status}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "API latency p95 (s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, route) (rate(notify_api_http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Notifications created (per s, by channel)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (channel) (rate(notify_api_notifications_created_total[1m]))", "legendFormat": "{{channel}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Notifications published (per s, by result)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (result) (rate(notify_api_notifications_published_total[1m]))", "legendFormat": "{{result}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Worker processed (per s: sent vs dead)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (channel, result) (rate(notify_worker_messages_processed_total[1m]))", "legendFormat": "{{channel}} {{result}}" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Provider attempts (per s, by outcome)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (outcome) (rate(notify_worker_provider_attempts_total[1m]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "In-memory queue depth",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "notify_worker_inmemory_queue_depth", "legendFormat": "{{channel}} {{priority}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Worker delivery p95 (s, by channel)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, channel) (rate(notify_worker_delivery_seconds_bucket[5m])))", "legendFormat": "{{channel}}" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Reaper reaped (per s, by stuck status)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (from_status) (rate(notify_reaper_reaped_total[5m]))", "legendFormat": "{{from_status}}" }
+      ]
+    }
+  ]
+}
