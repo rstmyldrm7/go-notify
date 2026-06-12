@@ -91,6 +91,18 @@ var (
 	}, []string{"channel"})
 )
 
+// --- Reaper (reconciliation) metrics ---
+
+// Reaped counts notifications re-dispatched by the reconciliation reaper,
+// labelled by the state they were stuck in. The reaper is a safety net: a
+// sustained non-zero rate means an upstream bug is stranding rows (e.g.
+// out-of-order Kafka commits) — alert on it and fix the source rather than
+// letting the reaper carry load.
+var Reaped = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "notify_reaper_reaped_total",
+	Help: "Notifications re-dispatched by the reconciliation reaper, by stuck status.",
+}, []string{"from_status"})
+
 // Handler returns the Prometheus scrape handler for /metrics.
 func Handler() http.Handler {
 	return promhttp.Handler()

@@ -313,6 +313,84 @@ func (r *Repository) DispatchDue(
 	return len(due), nil
 }
 
+// ReapStuck re-dispatches notifications stranded in a non-terminal state by an
+// edge case, making the database — not the Kafka offset — the source of truth:
+//
+//   - 'pending'    : the API failed to publish it. It never reached Kafka, so
+//                    re-publishing cannot duplicate it (short pendingAfter).
+//   - 'queued'     : published but never delivered (e.g. lost to an out-of-order
+//                    offset commit, or a topic with no live consumer).
+//   - 'processing' : a worker claimed it then died before a terminal state.
+//
+// inflightAfter must exceed the worst-case delivery time, since a 'queued' or
+// 'processing' row may still legitimately be in flight; reclaiming one too early
+// would double-send. A late duplicate is otherwise harmless — the worker's
+// MarkProcessing guard dedups it. Matched rows are re-published and reset to
+// 'queued', which refreshes updated_at and so leases them for another window
+// before they could be reaped again. FOR UPDATE SKIP LOCKED keeps concurrent
+// reapers from reclaiming the same row. Returns the reclaimed rows with their
+// original (pre-reset) status.
+func (r *Repository) ReapStuck(
+	ctx context.Context,
+	now time.Time,
+	pendingAfter, inflightAfter time.Duration,
+	limit int,
+	publish func(context.Context, []*domain.Notification) error,
+) ([]*domain.Notification, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx,
+		`SELECT`+notificationColumns+`
+		   FROM notifications
+		  WHERE (status = 'pending' AND updated_at < $1)
+		     OR (status IN ('queued', 'processing') AND updated_at < $2)
+		  ORDER BY updated_at
+		  LIMIT $3
+		  FOR UPDATE SKIP LOCKED`,
+		now.Add(-pendingAfter), now.Add(-inflightAfter), limit)
+	if err != nil {
+		return nil, fmt.Errorf("select stuck notifications: %w", err)
+	}
+
+	var stuck []*domain.Notification
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		stuck = append(stuck, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(stuck) == 0 {
+		return nil, nil
+	}
+
+	if err := publish(ctx, stuck); err != nil {
+		return nil, fmt.Errorf("re-publish stuck notifications: %w", err) // rolled back by defer
+	}
+
+	ids := make([]uuid.UUID, len(stuck))
+	for i, n := range stuck {
+		ids[i] = n.ID
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE notifications SET status = 'queued', updated_at = now() WHERE id = ANY($1)`, ids); err != nil {
+		return nil, fmt.Errorf("requeue stuck notifications: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit reap: %w", err)
+	}
+	return stuck, nil
+}
+
 // CancelOutcome describes what happened during a cancel attempt.
 type CancelOutcome struct {
 	Notification *domain.Notification

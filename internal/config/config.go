@@ -50,6 +50,24 @@ type Config struct {
 	SchedulerInterval time.Duration
 	// SchedulerBatchSize bounds how many due rows are claimed per transaction.
 	SchedulerBatchSize int
+	// SchedulerMetricsAddr is the listen address for the scheduler service's
+	// /metrics and /healthz.
+	SchedulerMetricsAddr string
+
+	// --- Reaper (reconciliation safety net) ---
+
+	// ReaperInterval is how often the reaper sweeps for stuck notifications.
+	ReaperInterval time.Duration
+	// ReaperPendingAfter is how long a 'pending' row may sit before it is
+	// re-published. Pending rows never reached Kafka, so this can be short.
+	ReaperPendingAfter time.Duration
+	// ReaperInflightAfter is how long a 'queued'/'processing' row may sit before
+	// it is re-published. It must exceed the worst-case delivery time so a row
+	// still legitimately in flight is never reclaimed; the scheduler floors it
+	// at ProviderTimeout × RetryMaxAttempts + margin regardless of this value.
+	ReaperInflightAfter time.Duration
+	// ReaperBatchSize bounds how many stuck rows are reclaimed per transaction.
+	ReaperBatchSize int
 }
 
 func Load() Config {
@@ -71,8 +89,14 @@ func Load() Config {
 		RetryBackoff:        getduration("RETRY_BACKOFF", 500*time.Millisecond),
 		MetricsAddr:         getenv("METRICS_ADDR", ":9100"),
 
-		SchedulerInterval:  getduration("SCHEDULER_INTERVAL", 5*time.Second),
-		SchedulerBatchSize: getint("SCHEDULER_BATCH_SIZE", 500),
+		SchedulerInterval:    getduration("SCHEDULER_INTERVAL", 5*time.Second),
+		SchedulerBatchSize:   getint("SCHEDULER_BATCH_SIZE", 500),
+		SchedulerMetricsAddr: getenv("SCHEDULER_METRICS_ADDR", ":9110"),
+
+		ReaperInterval:      getduration("REAPER_INTERVAL", time.Minute),
+		ReaperPendingAfter:  getduration("REAPER_PENDING_AFTER", time.Minute),
+		ReaperInflightAfter: getduration("REAPER_INFLIGHT_AFTER", 10*time.Minute),
+		ReaperBatchSize:     getint("REAPER_BATCH_SIZE", 500),
 	}
 }
 
