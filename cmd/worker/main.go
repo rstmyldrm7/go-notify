@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -72,7 +71,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 	}
 
 	// Observability endpoint: /metrics for Prometheus, /healthz for liveness.
-	metricsSrv := startMetricsServer(cfg.MetricsAddr, repo, log)
+	metricsSrv := metrics.StartObservabilityServer(cfg.MetricsAddr, repo.Ping, log)
 
 	// One isolated pool per channel, all running until shutdown.
 	var wg sync.WaitGroup
@@ -94,25 +93,4 @@ func run(cfg config.Config, log *slog.Logger) error {
 	_ = metricsSrv.Shutdown(shutdownCtx)
 	log.Info("worker service stopped")
 	return nil
-}
-
-func startMetricsServer(addr string, repo *storage.Repository, log *slog.Logger) *http.Server {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", metrics.Handler())
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := repo.Ping(r.Context()); err != nil {
-			http.Error(w, `{"status":"degraded","database":"unreachable"}`, http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("metrics server failed", "error", err)
-		}
-	}()
-	return srv
 }

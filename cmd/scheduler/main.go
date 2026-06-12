@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rstmyldrm7/go-notify/internal/config"
+	"github.com/rstmyldrm7/go-notify/internal/metrics"
 	"github.com/rstmyldrm7/go-notify/internal/queue"
 	"github.com/rstmyldrm7/go-notify/internal/scheduler"
 	"github.com/rstmyldrm7/go-notify/internal/storage"
@@ -38,17 +40,20 @@ func run(cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
+	repo := storage.NewRepository(pool)
 
 	publisher := queue.NewKafkaPublisher(cfg.KafkaBrokers, log)
 	defer publisher.Close()
 
-	s := scheduler.New(
-		storage.NewRepository(pool),
-		publisher,
-		cfg.SchedulerInterval,
-		cfg.SchedulerBatchSize,
-		log,
-	)
-	s.Run(ctx)
+	// Observability endpoint: /metrics for Prometheus, /healthz for liveness.
+	obsSrv := metrics.StartObservabilityServer(cfg.SchedulerMetricsAddr, repo.Ping, log)
+
+	log.Info("scheduler service started", "metrics_addr", cfg.SchedulerMetricsAddr)
+	scheduler.New(repo, publisher, cfg.SchedulerInterval, cfg.SchedulerBatchSize, log).Run(ctx)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = obsSrv.Shutdown(shutdownCtx)
+	log.Info("scheduler service stopped")
 	return nil
 }

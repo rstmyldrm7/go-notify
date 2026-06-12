@@ -6,7 +6,11 @@
 package metrics
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -91,7 +95,55 @@ var (
 	}, []string{"channel"})
 )
 
+// --- Scheduler metrics ---
+
+var (
+	// SchedulerDispatched counts scheduled notifications published to Kafka.
+	SchedulerDispatched = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "notify_scheduler_dispatched_total",
+		Help: "Scheduled notifications dispatched to Kafka.",
+	})
+
+	// SchedulerDispatchErrors counts ticks that errored before committing.
+	SchedulerDispatchErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "notify_scheduler_dispatch_errors_total",
+		Help: "Failed dispatch attempts (errored before committing the batch).",
+	})
+
+	// SchedulingLag measures how late a notification was dispatched relative to
+	// its scheduled_at. A rising lag means the poller is falling behind.
+	SchedulingLag = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "notify_scheduler_scheduling_lag_seconds",
+		Help:    "Delay between a notification's scheduled_at and its dispatch.",
+		Buckets: []float64{0.5, 1, 2, 5, 10, 30, 60, 120, 300},
+	})
+)
+
 // Handler returns the Prometheus scrape handler for /metrics.
 func Handler() http.Handler {
 	return promhttp.Handler()
+}
+
+// StartObservabilityServer starts an HTTP server exposing /metrics (Prometheus)
+// and /healthz (delegating to healthy) and returns it so the caller can shut it
+// down. Shared by the worker and scheduler so both expose the same surface.
+func StartObservabilityServer(addr string, healthy func(context.Context) error, log *slog.Logger) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", Handler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if err := healthy(r.Context()); err != nil {
+			http.Error(w, `{"status":"degraded","database":"unreachable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("observability server failed", "addr", addr, "error", err)
+		}
+	}()
+	return srv
 }

@@ -50,6 +50,9 @@ type Config struct {
 	SchedulerInterval time.Duration
 	// SchedulerBatchSize bounds how many due rows are claimed per transaction.
 	SchedulerBatchSize int
+	// SchedulerMetricsAddr is the listen address for the scheduler's /metrics
+	// and /healthz. Distinct default from the worker so both can run locally.
+	SchedulerMetricsAddr string
 }
 
 func Load() Config {
@@ -71,8 +74,9 @@ func Load() Config {
 		RetryBackoff:        getduration("RETRY_BACKOFF", 500*time.Millisecond),
 		MetricsAddr:         getenv("METRICS_ADDR", ":9100"),
 
-		SchedulerInterval:  getduration("SCHEDULER_INTERVAL", 5*time.Second),
-		SchedulerBatchSize: getint("SCHEDULER_BATCH_SIZE", 500),
+		SchedulerInterval:    getduration("SCHEDULER_INTERVAL", 5*time.Second),
+		SchedulerBatchSize:   getint("SCHEDULER_BATCH_SIZE", 500),
+		SchedulerMetricsAddr: getenv("SCHEDULER_METRICS_ADDR", ":9110"),
 	}
 }
 

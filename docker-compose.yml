@@ -138,11 +138,14 @@ services:
       dockerfile: build/Dockerfile
       args:
         SERVICE: scheduler
+    ports:
+      - "9110:9110" # Prometheus /metrics and /healthz
     environment:
       DATABASE_URL: "postgres://notify:notify@postgres:5432/notify?sslmode=disable"
       KAFKA_BROKERS: "kafka:19092"
       APP_ENV: "production"
       SCHEDULER_INTERVAL: "5s"
+      SCHEDULER_METRICS_ADDR: ":9110"
     depends_on:
       postgres:
         condition: service_healthy

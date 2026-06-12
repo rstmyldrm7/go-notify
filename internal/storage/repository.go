@@ -242,7 +242,7 @@ func (r *Repository) MarkDead(ctx context.Context, id uuid.UUID, lastError strin
 // DispatchDue claims up to limit notifications that are due — scheduled and
 // past their scheduled_at — publishes them via the supplied callback while they
 // are still locked, and on success transitions them to 'queued'. It returns the
-// number dispatched.
+// dispatched notifications (so the caller can record scheduling lag).
 //
 // Correctness/concurrency notes:
 //   - FOR UPDATE SKIP LOCKED lets several scheduler instances run concurrently
@@ -260,10 +260,10 @@ func (r *Repository) DispatchDue(
 	now time.Time,
 	limit int,
 	publish func(context.Context, []*domain.Notification) error,
-) (int, error) {
+) ([]*domain.Notification, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("begin tx: %w", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -275,7 +275,7 @@ func (r *Repository) DispatchDue(
 		  LIMIT $2
 		  FOR UPDATE SKIP LOCKED`, now, limit)
 	if err != nil {
-		return 0, fmt.Errorf("select due notifications: %w", err)
+		return nil, fmt.Errorf("select due notifications: %w", err)
 	}
 
 	var due []*domain.Notification
@@ -283,20 +283,20 @@ func (r *Repository) DispatchDue(
 		n, err := scanNotification(rows)
 		if err != nil {
 			rows.Close()
-			return 0, err
+			return nil, err
 		}
 		due = append(due, n)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if len(due) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 
 	if err := publish(ctx, due); err != nil {
-		return 0, fmt.Errorf("publish due notifications: %w", err) // rolled back by defer
+		return nil, fmt.Errorf("publish due notifications: %w", err) // rolled back by defer
 	}
 
 	ids := make([]uuid.UUID, len(due))
@@ -305,12 +305,12 @@ func (r *Repository) DispatchDue(
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE notifications SET status = 'queued', updated_at = now() WHERE id = ANY($1)`, ids); err != nil {
-		return 0, fmt.Errorf("mark due queued: %w", err)
+		return nil, fmt.Errorf("mark due queued: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit due dispatch: %w", err)
+		return nil, fmt.Errorf("commit due dispatch: %w", err)
 	}
-	return len(due), nil
+	return due, nil
 }
 
 // CancelOutcome describes what happened during a cancel attempt.

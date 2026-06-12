@@ -5,6 +5,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/rstmyldrm7/go-notify/internal/ctxutil"
+	"github.com/rstmyldrm7/go-notify/internal/metrics"
 	"github.com/rstmyldrm7/go-notify/internal/queue"
 	"github.com/rstmyldrm7/go-notify/internal/storage"
 )
@@ -55,13 +59,31 @@ func (s *Scheduler) Run(ctx context.Context) {
 // after downtime) is cleared without holding one oversized transaction.
 func (s *Scheduler) tick(ctx context.Context) {
 	for {
-		n, err := s.repo.DispatchDue(ctx, time.Now(), s.batchSize, s.publisher.PublishNotifications)
+		// One correlation id per dispatch run, propagated into the published
+		// Kafka headers so a scheduled delivery is traceable end to end.
+		runCtx := ctxutil.WithCorrelationID(ctx, uuid.NewString())
+
+		dispatched, err := s.repo.DispatchDue(runCtx, time.Now(), s.batchSize, s.publisher.PublishNotifications)
 		if err != nil {
+			if ctx.Err() != nil {
+				return // shutting down: the cancelled context, not a real failure
+			}
 			s.log.ErrorContext(ctx, "dispatch due failed", "error", err)
+			metrics.SchedulerDispatchErrors.Inc()
 			return
 		}
+
+		n := len(dispatched)
 		if n > 0 {
-			s.log.InfoContext(ctx, "dispatched scheduled notifications", "count", n)
+			now := time.Now()
+			for _, notif := range dispatched {
+				if notif.ScheduledAt != nil {
+					metrics.SchedulingLag.Observe(now.Sub(*notif.ScheduledAt).Seconds())
+				}
+			}
+			metrics.SchedulerDispatched.Add(float64(n))
+			s.log.InfoContext(runCtx, "dispatched scheduled notifications",
+				"count", n, "correlation_id", ctxutil.CorrelationID(runCtx))
 		}
 		if n < s.batchSize {
 			return // fewer than a full batch means we have caught up
